@@ -1,0 +1,17 @@
+# Required Python packages for Voice Agent Project
+
+# Environment
+python-dotenv
+
+# Voice Agent Core
+livekit-agents
+
+# LLM and Audio
+openai
+deepgram-sdk
+cartesia
+silero
+
+# Utils
+aiohttp
+requests
