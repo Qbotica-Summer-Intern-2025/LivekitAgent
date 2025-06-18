@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from typing import Optional
 from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, AgentSession, RoomInputOptions
-from livekit.plugins import deepgram, openai, silero, noise_cancellation
+from livekit.plugins import deepgram, openai, silero, noise_cancellation, playai
 import random
 import aiohttp
 
@@ -38,7 +38,7 @@ LOGISTICS_PHONE_NUMBER = os.getenv("LOGISTICS_PHONE_NUMBER")
 try:
     logistics_dataset = pd.read_csv("logistics_dataset.csv")
     required_columns = [
-        "shipment_id", "origin_city", "origin_state", "destination_city",
+        "origin_city", "origin_state", "destination_city",
         "destination_state", "fuel_cost_usd", "toll_cost_usd", "weight_lbs",
         "distance_miles"
     ]
@@ -53,66 +53,60 @@ async def log_transcript(role: str, content: str):
     logger.info(f"[{role.upper()}]: {content}")
 
 def get_quote_from_dataset(parsed_entities: dict) -> dict:
-    """Retrieve shipment details based on ID or origin/destination."""
+    """Retrieve load details based on origin/destination."""
     if not parsed_entities:
-        return {"quote_amount": None, "shipment_data": None}
+        return {"quote_amount": None, "load_data": None}
 
-    shipment = None
-    shipment_id = parsed_entities.get("shipment_id")
-
-    if shipment_id:
-        shipment_id = shipment_id.upper()
-        matching_shipments = logistics_dataset[logistics_dataset["shipment_id"].str.upper() == shipment_id]
-        if not matching_shipments.empty:
-            shipment = matching_shipments
-
-    if (shipment is None or shipment.empty) and all(
-            parsed_entities.get(k) for k in ["origin_city", "origin_state", "destination_city", "destination_state"]):
+    load = None
+    if all(parsed_entities.get(k) for k in ["origin_city", "origin_state", "destination_city", "destination_state"]):
         origin_city = parsed_entities["origin_city"].lower()
         origin_state = parsed_entities["origin_state"].upper()
         destination_city = parsed_entities["destination_city"].lower()
         destination_state = parsed_entities["destination_state"].upper()
 
-        shipment = logistics_dataset[
+        load = logistics_dataset[
             (logistics_dataset["origin_city"].str.lower() == origin_city) &
             (logistics_dataset["origin_state"].str.upper() == origin_state) &
             (logistics_dataset["destination_city"].str.lower() == destination_city) &
             (logistics_dataset["destination_state"].str.upper() == destination_state)
         ]
 
-    if shipment is not None and not shipment.empty:
-        shipment = shipment.iloc[0]
-        quote = (
-            shipment["fuel_cost_usd"] +
-            shipment["toll_cost_usd"] +
-            shipment["weight_lbs"] * 0.05 +
-            shipment["distance_miles"] * 2.00
+    if load is not None and not load.empty:
+        load = load.iloc[0]
+        base_cost = (
+            load["fuel_cost_usd"] +
+            load["toll_cost_usd"] +
+            load["weight_lbs"] * 0.05 +
+            load["distance_miles"] * 2.00
         )
+        # Initial quote with 25% markup for profit
+        quote = base_cost * 1.25
         return {
             "quote_amount": round(quote, 2),
-            "shipment_data": shipment.to_dict()
+            "base_cost": round(base_cost, 2),
+            "load_data": load.to_dict()
         }
 
-    return {"quote_amount": None, "shipment_data": None}
+    return {"quote_amount": None, "base_cost": None, "load_data": None}
 
 class LogisticsVoiceAgent(agents.Agent):
     def __init__(self, dial_info: dict):
         super().__init__(
             instructions=(
-                f"You are {AGENT_NAME}, a logistics voice assistant for Qbotica, handling an outbound call. "
-                "Use pause words and fillers but talk fast and naturally. "
-                "Your goal is to discuss a specific shipment quote with a logistics contact. "
-                "Be professional, polite, and conversational. "
-                "Do NOT ask for shipment ID, origin, or destination unless the user mentions a different shipment. "
-                "If the user asks about rate, weight, or cost, assume it's about the current shipment. "
-                "Use the 'get_quote' tool only when a new shipment ID or location details are provided. "
-                "Use the 'end_call' tool when the user explicitly requests to end the conversation. "
-                "Example: 'Uh, let me check that quote for you real quick... okay, here it is!'"
+                f"You are {AGENT_NAME}, a logistics negotiator for Qbotica, handling outbound calls to logistics companies. "
+                "Your goal is to negotiate and confirm the best price and sending date for sending a specific load. "
+                "Use pause words and fillers, talk fast and naturally, and be persuasive yet polite. "
+                "Start with the load context in the welcome message and focus on negotiating the price (starting with a 25% profit margin) "
+                "down to a minimum 15% profit margin, while confirming the sending date. "
+                "Do not mention other loads or the word 'shipment.' "
+                "Use the 'get_quote' tool only for new load details if provided. "
+                "Use the 'end_call' tool when the price and date are agreed or the user ends the call. "
+                "Example: 'Uh, let’s start at $500—can we get it to $450 and confirm a date?'"
             )
         )
         self.call_context = {
             'call_type': 'outbound',
-            'outbound_shipment_context': dial_info.get('shipment_data', {}),
+            'outbound_load_context': dial_info.get('load_data', {}),
             'conversation_history': [],
             'latest_quote': dial_info.get('quote_info', {}),
             'call_active': False
@@ -124,11 +118,10 @@ class LogisticsVoiceAgent(agents.Agent):
         self.participant = participant
         logger.info(f"Participant set: {participant.identity if participant else 'None'}")
 
-    @agents.function_tool(name="get_quote", description="Retrieve shipment details based on shipment ID or origin/destination.")
+    @agents.function_tool(name="get_quote", description="Retrieve load details based on origin/destination.")
     async def get_quote(
         self,
         ctx: agents.RunContext,
-        shipment_id: Optional[str] = None,
         origin_city: Optional[str] = None,
         origin_state: Optional[str] = None,
         destination_city: Optional[str] = None,
@@ -136,7 +129,6 @@ class LogisticsVoiceAgent(agents.Agent):
     ) -> dict:
         try:
             quote_info = get_quote_from_dataset({
-                "shipment_id": shipment_id,
                 "origin_city": origin_city,
                 "origin_state": origin_state,
                 "destination_city": destination_city,
@@ -146,16 +138,29 @@ class LogisticsVoiceAgent(agents.Agent):
             logger.info(f"Quote retrieved: {quote_info}")
 
             if quote_info["quote_amount"]:
-                shipment = quote_info["shipment_data"]
+                load = quote_info["load_data"]
+                base_cost = quote_info["base_cost"]
+                initial_quote = quote_info["quote_amount"]
+                # Minimum quote with 15% profit margin
+                min_quote = base_cost * 1.15
+                negotiated_quote = max(min_quote, initial_quote * 0.9)  # Ensure at least 15% profit
+                # Natural follow-up and negotiation variations with date confirmation
+                follow_ups = [
+                    f"Uh, let’s start at ${initial_quote:.2f}—how about we bring it down to ${negotiated_quote:.2f}? Can you confirm a sending date?",
+                    f"Cool, I’m proposing ${initial_quote:.2f}—can we settle at ${negotiated_quote:.2f} and pick a date?",
+                    f"Okay, let’s begin with ${initial_quote:.2f}—what about ${negotiated_quote:.2f} with a confirmed date?",
+                    f"Great, how about ${initial_quote:.2f} to start? Let’s negotiate to ${negotiated_quote:.2f} and set a date!"
+                ]
+                follow_up = random.choice(follow_ups)
                 response = (
-                    f"Uh, here's the quote for shipment {shipment['shipment_id']} from "
-                    f"{shipment['origin_city']}, {shipment['origin_state']} to "
-                    f"{shipment['destination_city']}, {shipment['destination_state']}. "
-                    f"It's ${quote_info['quote_amount']:.2f} for a {shipment['weight_lbs']}-pound shipment "
-                    f"over {shipment['distance_miles']} miles. How's that sound?"
+                    f"The quote for this load from "
+                    f"{load['origin_city']}, {load['origin_state']} to "
+                    f"{load['destination_city']}, {load['destination_state']} is "
+                    f"${initial_quote:.2f} for a {load['weight_lbs']}-pound load "
+                    f"over {load['distance_miles']} miles. {follow_up}"
                 )
             else:
-                response = "Sorry, I couldn't find a quote with those details. Could you provide a valid shipment ID or origin and destination?"
+                response = "Sorry, I couldn’t find details for this. Could you provide the origin and destination?"
 
             await log_transcript("assistant", response)
             return {"response": response}
@@ -172,7 +177,7 @@ class LogisticsVoiceAgent(agents.Agent):
             self.call_context['call_active'] = False
             self.call_context['call_type'] = 'waiting'
             logger.info("Call ended by tool")
-            response = "Alright, thanks for the chat! Have a great day, goodbye!"
+            response = "Alright, we’ve agreed on the price and date—thanks for sorting this out! Goodbye!"
             await log_transcript("assistant", response)
             await asyncio.sleep(2)
             return {"response": response}
@@ -191,20 +196,19 @@ async def entrypoint(ctx: JobContext):
         await ctx.connect(auto_subscribe=agents.AutoSubscribe.SUBSCRIBE_ALL)
         logger.info(f"Agent connected to {LIVEKIT_URL}, waiting for participant...")
 
-        # Select a random shipment for outbound call
+        # Select a random load for outbound call
         if not logistics_dataset.empty:
-            random_shipment = logistics_dataset.sample(n=1).iloc[0]
+            random_load = logistics_dataset.sample(n=1).iloc[0]
             quote_info = get_quote_from_dataset({
-                "shipment_id": random_shipment["shipment_id"],
-                "origin_city": random_shipment["origin_city"],
-                "origin_state": random_shipment["origin_state"],
-                "destination_city": random_shipment["destination_city"],
-                "destination_state": random_shipment["destination_state"]
+                "origin_city": random_load["origin_city"],
+                "origin_state": random_load["origin_state"],
+                "destination_city": random_load["destination_city"],
+                "destination_state": random_load["destination_state"]
             })
             dial_info = {
                 "phone_number": LOGISTICS_PHONE_NUMBER,
                 "transfer_to": None,
-                "shipment_data": random_shipment.to_dict(),
+                "load_data": random_load.to_dict(),
                 "quote_info": quote_info
             }
         else:
@@ -231,20 +235,13 @@ async def entrypoint(ctx: JobContext):
 
         # Set up the agent session
         session = AgentSession(
-            stt=deepgram.STT(
-                api_key=DEEPGRAM_API_KEY,
-                model="nova-2",
-                language="en-US",
-                smart_format=True,
-                interim_results=True,
-                endpointing_ms=300
+            stt=openai.STT(
+                model="whisper-1",
+                noise_reduction_type="near_feild"
             ),
             llm=openai.LLM(model="gpt-4o", temperature=0.7),
-            tts=openai.TTS(
-                voice="shimmer",
-                model="gpt-4o-mini-tts",
-                speed=3.0,
-                instructions="You are a logistics agent. Speak naturally and professionally."
+            tts=deepgram.TTS(
+                model="aura-2-andromeda-en"
             ),
             vad=silero.VAD.load()
         )
@@ -268,10 +265,10 @@ async def entrypoint(ctx: JobContext):
         # Send initial greeting message
         welcome_message = (
             f"Hello, this is Qbot from Qbotica logistics. "
-            f"I'm calling about shipment {dial_info['shipment_data']['shipment_id']} "
-            f"from {dial_info['shipment_data']['origin_city']}, {dial_info['shipment_data']['origin_state']} "
-            f"to {dial_info['shipment_data']['destination_city']}, {dial_info['shipment_data']['destination_state']}. "
-            f"The current quote is ${dial_info['quote_info']['quote_amount']:.2f}. How does this rate sound to you?"
+            f"I'm calling to discuss sending this load from "
+            f"{dial_info['load_data']['origin_city']}, {dial_info['load_data']['origin_state']} to "
+            f"{dial_info['load_data']['destination_city']}, {dial_info['load_data']['destination_state']}. "
+            "Is it a good time to talk about the price and sending date?"
         )
         await log_transcript("assistant", welcome_message)
         await session.generate_reply(instructions=welcome_message)

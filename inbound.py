@@ -175,6 +175,8 @@ async def entrypoint(ctx: JobContext):
     health_check_task = None
     session = None
     connection_active = True
+    inactivity_timeout = 300  # 5-minute inactivity timeout in seconds
+    last_activity_time = asyncio.get_event_loop().time()
 
     try:
         logger.info(f"Starting {AGENT_NAME} entrypoint for room: {ctx.room.name}")
@@ -209,11 +211,8 @@ async def entrypoint(ctx: JobContext):
                 endpointing_ms=300
             ),
             llm=openai.LLM(model="gpt-4o", temperature=0.7),
-            tts=openai.TTS(
-                voice="shimmer",
-                model="gpt-4o-mini-tts",
-                speed=3.0,
-                instructions="You are a logistics agent. Speak naturally and professionally."
+            tts=deepgram.TTS(
+                model="aura-2-andromeda-en"
             ),
             vad=silero.VAD.load()
         )
@@ -236,17 +235,24 @@ async def entrypoint(ctx: JobContext):
 
         # Send initial greeting message
         welcome_message = (
-            f"Hello! This is {AGENT_NAME} from Qbotica logistics. "
+            f"Hello! This is Qbot from Qbotica logistics. "
             "I'm here to help you with your shipping needs and provide quotes. "
             "How can I assist you today?"
         )
         await log_transcript("assistant", welcome_message)
         await session.generate_reply(instructions=welcome_message)
+        last_activity_time = asyncio.get_event_loop().time()
 
         logger.info("Inbound call initiated successfully")
 
-        # Keep the session running until it completes
-        while session.turn_detection and connection_active:
+        # Keep the session running until it completes or times out
+        while connection_active:
+            if session.turn_detection:
+                last_activity_time = asyncio.get_event_loop().time()
+            elif asyncio.get_event_loop().time() - last_activity_time > inactivity_timeout:
+                logger.info("Inactivity timeout reached, ending call")
+                await agent.end_call(ctx)
+                break
             await asyncio.sleep(1)
 
     except Exception as e:
