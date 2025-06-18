@@ -19,7 +19,7 @@ logger = logging.getLogger("Agent")
 _http_session = None
 AGENT_NAME = "Qbot"
 
-load_dotenv(".env.local")
+load_dotenv(".env")
 
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
@@ -32,7 +32,7 @@ LIVEKIT_ROOM = "playground-B6Mt-CCXH"
 if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEEPGRAM_API_KEY, OPENAI_API_KEY, CARTESIA_API_KEY]):
     logger.error("Missing required environment variables")
     raise ValueError(
-        "Please check .env.local for LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEEPGRAM_API_KEY, OPENAI_API_KEY, and CARTESIA_API_KEY")
+        "Please check .env for LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEEPGRAM_API_KEY, OPENAI_API_KEY, and CARTESIA_API_KEY")
 
 dg_client = DeepgramClient(api_key=DEEPGRAM_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)

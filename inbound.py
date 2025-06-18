@@ -16,7 +16,7 @@ AGENT_NAME = "inbound-agent"
 LIVEKIT_ROOM_PREFIX = "call"
 
 # Load environment variables
-load_dotenv(".env.local")
+load_dotenv(".env")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
@@ -26,7 +26,7 @@ SIP_INBOUND_TRUNK_ID = os.getenv("SIP_INBOUND_TRUNK_ID", "ST_8nUkUTsN5xV4")
 
 if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEEPGRAM_API_KEY, OPENAI_API_KEY, SIP_INBOUND_TRUNK_ID]):
     logger.error("Missing required environment variables")
-    raise ValueError("Please check .env.local for required API keys, LIVEKIT_URL, and SIP_INBOUND_TRUNK_ID")
+    raise ValueError("Please check .env for required API keys, LIVEKIT_URL, and SIP_INBOUND_TRUNK_ID")
 
 # Load logistics dataset
 try:

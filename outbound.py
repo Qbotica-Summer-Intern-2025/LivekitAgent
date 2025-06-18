@@ -18,14 +18,14 @@ AGENT_NAME = "outbound-logistics-agent"
 LIVEKIT_ROOM_PREFIX = "outbound-call"
 
 # Load environment variables
-load_dotenv(".env.local")
+load_dotenv(".env")
 required_env = [
     "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
     "DEEPGRAM_API_KEY", "OPENAI_API_KEY", "LOGISTICS_PHONE_NUMBER"
 ]
 for var in required_env:
     if not os.getenv(var):
-        raise ValueError(f"{var} missing in .env.local")
+        raise ValueError(f"{var} missing in .env")
 
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
