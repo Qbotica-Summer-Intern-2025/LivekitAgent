@@ -4,10 +4,12 @@ import os
 import pandas as pd
 from dotenv import load_dotenv
 from livekit import agents, rtc, api
-from livekit.agents import JobContext, WorkerOptions, cli, llm, Agent, AgentSession, RoomInputOptions
-from livekit.plugins import deepgram, openai, silero, noise_cancellation, elevenlabs
+from livekit.agents import JobContext, WorkerOptions, cli, Agent, AgentSession, RoomInputOptions
+from livekit.plugins import deepgram, openai, silero, noise_cancellation
 from typing import Optional
 import aiohttp
+from faq_dataset import get_faq_data
+import difflib
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("LogisticsAgent")
@@ -30,9 +32,9 @@ if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEEPGRAM_API_KEY, 
 
 # Load logistics dataset
 try:
-    logistics_dataset = pd.read_csv("logistics_dataset.csv")
+    logistics_dataset = pd.read_csv("test_dataset.csv")
     required_columns = ["shipment_id", "origin_city", "origin_state", "destination_city", "destination_state",
-                        "fuel_cost_usd", "toll_cost_usd", "weight_lbs", "distance_miles"]
+                        "fuel_cost_usd", "toll_cost_usd", "weight_lbs", "distance_miles", "status"]
     if not all(col in logistics_dataset.columns for col in required_columns):
         logger.error("Dataset missing required columns")
         raise ValueError("Required columns: " + ", ".join(required_columns))
@@ -50,11 +52,13 @@ class LogisticsAgent(Agent):
             instructions=(
                 f"You are {AGENT_NAME}, a friendly logistics assistant for Qbotica. "
                 "Use pause words and fillers but talk fast more naturally in your speech. "
+                "Do not repeat the shipment id again and again to user for followup questions. "
                 "Uhh... let me quickly check that shipment ID for you, okay? Just a sec..."
                 "You help customers with shipping quotes and logistics needs. "
                 "Use the 'get_quote' tool when the user provides a valid shipment ID (e.g., SHP00001) "
                 "or complete origin and destination details (city and state for both, e.g., Chicago, IL to Miami, FL). "
                 "For follow-up questions, reference the latest quote without calling 'get_quote' again. "
+                "Use the 'get_faq' tool when the user asks general questions about logistics services. "
                 "If the user asks to tell a joke, please do so. "
                 "Be professional, helpful, and conversational. Ask for clarification if details are incomplete. "
                 "Only use 'end_call' if the user explicitly requests to end the conversation."
@@ -77,7 +81,12 @@ class LogisticsAgent(Agent):
             origin_city: Optional[str] = None,
             origin_state: Optional[str] = None,
             destination_city: Optional[str] = None,
-            destination_state: Optional[str] = None
+            destination_state: Optional[str] = None,
+            status: Optional[str] = None,
+            last_updated_timestamp: Optional[str] = None,
+            truck_type: Optional[str] = None,
+            vendor_name: Optional[str] = None,
+            vendor_contact_number: Optional[str] = None
     ) -> dict:
         try:
             quote_info = get_quote_from_dataset({
@@ -85,7 +94,12 @@ class LogisticsAgent(Agent):
                 "origin_city": origin_city,
                 "origin_state": origin_state,
                 "destination_city": destination_city,
-                "destination_state": destination_state
+                "destination_state": destination_state,
+                "status": status,
+                "last_updated_timestamp": last_updated_timestamp,
+                "truck_type": truck_type,
+                "vendor_name": vendor_name,
+                "vendor_contact_number": vendor_contact_number
             })
             self.call_context['latest_quote'] = quote_info
             logger.info(f"Quote retrieved: {quote_info}")
@@ -95,7 +109,11 @@ class LogisticsAgent(Agent):
                 response = (
                     f"The quote for shipment {shipment['shipment_id']} from {shipment['origin_city']}, {shipment['origin_state']} "
                     f"to {shipment['destination_city']}, {shipment['destination_state']} is ${quote_info['quote_amount']}, "
-                    f"for a {shipment['weight_lbs']}-pound shipment over {shipment['distance_miles']} miles."
+                    f"for a {shipment['weight_lbs']}-pound shipment over {shipment['distance_miles']} miles.",
+                    f"Status: {shipment['status']}.",
+                    f"Last updated: {shipment['last_updated_timestamp']}.",
+                    f"Truck type: {shipment['truck_type']}.",
+                    f"Vendor: {shipment['vendor_name']}, Contact: {shipment['vendor_contact_number']}."
                 )
             else:
                 response = "No quote found for the provided details."
@@ -109,6 +127,28 @@ class LogisticsAgent(Agent):
             await log_transcript("assistant", response)
             return {"response": response}
 
+    @agents.function_tool(name="get_faq",
+                          description="Retrieve answers to general FAQ questions about logistics services.")
+    async def get_faq(self, ctx: agents.RunContext, question: str) -> dict:
+        try:
+            question = question.lower().strip()
+            answer = get_faq_answer(question)
+            if answer:
+                response = answer
+                logger.info(f"FAQ answer retrieved: {response}")
+            else:
+                response = "I'm sorry, I don't have an answer for that question. Could you provide more details or ask something else?"
+                logger.info("No FAQ answer found for question")
+
+            await log_transcript("assistant", response)
+            return {"response": response}
+
+        except Exception as e:
+            logger.error(f"Error getting FAQ answer: {e}")
+            response = "I apologize, but I'm having trouble answering that question right now. Please try again."
+            await log_transcript("assistant", response)
+            return {"response": response}
+
     @agents.function_tool(name="end_call", description="End the conversation and disconnect the call.")
     async def end_call(self, ctx: agents.RunContext) -> dict:
         try:
@@ -118,11 +158,7 @@ class LogisticsAgent(Agent):
             response = "Thank you for calling Qbotica logistics. Have a great day! Goodbye!"
             await log_transcript("assistant", response)
 
-            # Add a small delay to ensure the goodbye message is delivered
             await asyncio.sleep(2)
-
-            # Gracefully end the call without deleting the room
-            # The room will be cleaned up automatically by the entrypoint
             return {"response": response}
 
         except Exception as e:
@@ -171,11 +207,20 @@ def get_quote_from_dataset(parsed_entities: dict) -> dict:
 
     return {"quote_amount": None, "shipment_data": None}
 
+def get_faq_answer(question: str) -> Optional[str]:
+    question = question.lower().strip()
+    faq_data = get_faq_data()
+    questions = list(faq_data.keys())
+    matches = difflib.get_close_matches(question, questions, n=1, cutoff=0.6)
+    if matches:
+        return faq_data[matches[0]]
+    return None
+
 async def entrypoint(ctx: JobContext):
     health_check_task = None
     session = None
     connection_active = True
-    inactivity_timeout = 300  # 5-minute inactivity timeout in seconds
+    inactivity_timeout = 300
     last_activity_time = asyncio.get_event_loop().time()
 
     try:
@@ -183,7 +228,6 @@ async def entrypoint(ctx: JobContext):
         await ctx.connect(auto_subscribe=agents.AutoSubscribe.SUBSCRIBE_ALL)
         logger.info(f"Agent connected to {LIVEKIT_URL}, waiting for participant...")
 
-        # Wait for participant with timeout
         try:
             participant = await asyncio.wait_for(
                 ctx.wait_for_participant(),
@@ -197,10 +241,7 @@ async def entrypoint(ctx: JobContext):
             logger.error(f"Error waiting for participant: {e}")
             return
 
-        # Create the agent instance
         agent = LogisticsAgent()
-
-        # Set up the agent session with correct parameters
         session = AgentSession(
             stt=deepgram.STT(
                 api_key=DEEPGRAM_API_KEY,
@@ -217,26 +258,21 @@ async def entrypoint(ctx: JobContext):
             vad=silero.VAD.load()
         )
 
-        # Update agent context for inbound call
         agent.call_context['call_type'] = 'inbound'
         agent.call_context['conversation_history'] = []
         agent.call_context['latest_quote'] = None
         agent.call_context['call_active'] = True
 
-        # Start health check
         health_check_task = asyncio.create_task(health_check())
-
-        # Start the session
         await session.start(
             room=ctx.room,
             agent=agent,
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC())
         )
 
-        # Send initial greeting message
         welcome_message = (
             f"Hello! This is Qbot from Qbotica logistics. "
-            "I'm here to help you with your shipping needs and provide quotes. "
+            "I'm here to help you with your shipping needs, provide quotes, or answer general questions. "
             "How can I assist you today?"
         )
         await log_transcript("assistant", welcome_message)
@@ -245,7 +281,6 @@ async def entrypoint(ctx: JobContext):
 
         logger.info("Inbound call initiated successfully")
 
-        # Keep the session running until it completes or times out
         while connection_active:
             if session.turn_detection:
                 last_activity_time = asyncio.get_event_loop().time()
@@ -261,7 +296,6 @@ async def entrypoint(ctx: JobContext):
     finally:
         connection_active = False
 
-        # Cleanup tasks
         if health_check_task:
             health_check_task.cancel()
             try:
@@ -269,7 +303,6 @@ async def entrypoint(ctx: JobContext):
             except asyncio.CancelledError:
                 pass
 
-        # Gracefully disconnect room
         try:
             if ctx.room and ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
                 await ctx.room.disconnect()
@@ -278,7 +311,6 @@ async def entrypoint(ctx: JobContext):
             logger.error(f"Error during cleanup: {cleanup_e}")
 
 async def health_check():
-    """Periodic health check to ensure agent is registered with LiveKit"""
     retry_count = 0
     max_retries = 3
 
@@ -288,7 +320,7 @@ async def health_check():
                 async with session.get(f"{LIVEKIT_URL}/health") as resp:
                     if resp.status == 200:
                         logger.debug("Agent health check: LiveKit server is reachable")
-                        retry_count = 0  # Reset retry count on success
+                        retry_count = 0
                     else:
                         logger.warning(f"Agent health check failed: HTTP {resp.status}")
                         retry_count += 1
@@ -298,8 +330,6 @@ async def health_check():
 
         if retry_count >= max_retries:
             logger.error(f"Health check failed {max_retries} times consecutively")
-            # Consider breaking or implementing recovery logic
-
         await asyncio.sleep(30)
 
 if __name__ == "__main__":

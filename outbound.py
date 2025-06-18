@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from typing import Optional
 from livekit import agents, rtc
 from livekit.agents import JobContext, WorkerOptions, cli, AgentSession, RoomInputOptions
-from livekit.plugins import deepgram, openai, silero, noise_cancellation, playai
+from livekit.plugins import deepgram, openai, silero, noise_cancellation
 import random
 import aiohttp
 
