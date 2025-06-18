@@ -1,0 +1,17 @@
+{
+  "name": "my-dispatch",
+  "trunk_ids": ["ST_rjzViNkvdWNi"],
+  "rule": {
+    "dispatchRuleDirect": {
+      "roomName": "call"
+    }
+  },
+  "roomConfig": {
+    "agents": [
+      {
+        "agentName": "inbound-agent",
+        "metadata": "auto-join"
+      }
+    ]
+  }
+}

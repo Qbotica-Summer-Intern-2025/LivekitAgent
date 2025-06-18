@@ -1,3 +1,14 @@
-# created by virtualenv automatically
+*
 
-ven/
+!inbound.py
+!outbound.py
+!logistics_dataset.csv
+!requirements.txt
+!README.md
+!inbound-trunk.json
+!updated-dispatch.json
+
+!.gitignore
+
+#venv
+test/
