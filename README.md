@@ -114,4 +114,4 @@ Pull requests are welcome! Please:
 
 ## 📄 License
 
-MIT License (or your preferred license)
+MIT License 
