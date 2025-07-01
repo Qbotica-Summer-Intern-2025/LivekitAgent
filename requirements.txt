@@ -3,7 +3,8 @@ livekit-plugins-openai
 livekit-plugins-silero
 python-dotenv
 livekit-api
-flask[async]
-flask
-flask-cors
-uvicorn
+livekit-plugins-deepgram
+livekit-plugins-turn-detector
+livekit-plugins-noise-cancellation~=0.2
+
+

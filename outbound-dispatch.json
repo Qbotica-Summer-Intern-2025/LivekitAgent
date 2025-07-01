@@ -1,0 +1,19 @@
+{
+    "name": "Outbound Dispatch Rule",
+    "trunk_ids": [
+        "ST_FAoHHu58mR7Y"
+    ],
+    "rule": {
+        "dispatchRuleIndividual": {
+            "roomPrefix": "call-"
+        }
+    },
+    "roomConfig": {
+        "agents": [
+            {
+                "agentName": "outbound-agent",
+                "metadata": "auto-join"
+            }
+        ]
+    }
+}

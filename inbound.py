@@ -2,20 +2,23 @@ import asyncio
 import logging
 import os
 import pandas as pd
+import json
 from dotenv import load_dotenv
 from livekit import agents, rtc, api
-from livekit.agents import JobContext, WorkerOptions, cli, Agent, AgentSession, RoomInputOptions
+from livekit.agents import JobContext, WorkerOptions, cli, Agent, AgentSession, RoomInputOptions, get_job_context, BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
 from livekit.plugins import deepgram, openai, silero, noise_cancellation
 from typing import Optional
 import aiohttp
 from faq_dataset import get_faq_data
 import difflib
+import random
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("LogisticsAgent")
 
 AGENT_NAME = "inbound-agent"
-LIVEKIT_ROOM_PREFIX = "call"
+LIVEKIT_ROOM_PREFIX = "call-"
+ROOM_NAME = os.getenv("LIVEKIT_ROOM_NAME", f"{LIVEKIT_ROOM_PREFIX}-{random.randint(1000, 9999)}")
 
 # Load environment variables
 load_dotenv(".env")
@@ -24,7 +27,7 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SIP_INBOUND_TRUNK_ID = os.getenv("SIP_INBOUND_TRUNK_ID", "ST_8nUkUTsN5xV4")
+SIP_INBOUND_TRUNK_ID = os.getenv("SIP_INBOUND_TRUNK_ID")
 
 if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, DEEPGRAM_API_KEY, OPENAI_API_KEY, SIP_INBOUND_TRUNK_ID]):
     logger.error("Missing required environment variables")
@@ -47,21 +50,24 @@ async def log_transcript(role: str, content: str):
     logger.info(f"[{role.upper()}]: {content}")
 
 class LogisticsAgent(Agent):
-    def __init__(self):
+    def __init__(self, room: rtc.Room):
         super().__init__(
             instructions=(
                 f"You are {AGENT_NAME}, a friendly logistics assistant for Qbotica. "
-                "Use pause words and fillers but talk fast more naturally in your speech. "
-                "Do not repeat the shipment id again and again to user for followup questions. "
-                "Uhh... let me quickly check that shipment ID for you, okay? Just a sec..."
+                "Do not repeat the shipment ID in follow-up questions. "
+                "Uhh... let me quickly check that shipment ID for you, okay? Just a sec... "
                 "You help customers with shipping quotes and logistics needs. "
                 "Use the 'get_quote' tool when the user provides a valid shipment ID (e.g., SHP00001) "
                 "or complete origin and destination details (city and state for both, e.g., Chicago, IL to Miami, FL). "
                 "For follow-up questions, reference the latest quote without calling 'get_quote' again. "
-                "Use the 'get_faq' tool when the user asks general questions about logistics services. "
-                "If the user asks to tell a joke, please do so. "
+                "Use the 'get_faq' tool for general questions about logistics services. "
+                "If the user asks for a joke, tell one. "
+                "The 'get_quote' tool automatically sends shipment details to a Slack channel. "
+                "Do not call 'send_slack_message' directly; it is handled by 'get_quote'. "
                 "Be professional, helpful, and conversational. Ask for clarification if details are incomplete. "
                 "Only use 'end_call' if the user explicitly requests to end the conversation."
+                "If the user asks for a human agent, use 'transfer_call' to connect them. "
+                "If a message is received from Slack, incorporate it into the conversation appropriately."
             )
         )
         self.call_context = {
@@ -71,6 +77,33 @@ class LogisticsAgent(Agent):
             'latest_quote': None,
             'call_active': False
         }
+        self.room = room
+        # Register synchronous data_received callback
+        self.room.on("data_received", lambda packet: self.on_data_received(packet))
+
+    def on_data_received(self, packet: rtc.DataPacket):
+        """Handle incoming data packets from the LiveKit room, including Slack messages."""
+        try:
+            payload = packet.data.decode('utf-8')
+            logger.debug(f"Received data packet: {payload}")
+            data = json.loads(payload)
+            slack_message = data.get("slack_message")
+            if slack_message:
+                logger.info(f"Received Slack message: {slack_message}")
+                # Use asyncio.create_task to run async operations
+                response = f"I received a message from our team via Slack: {slack_message}. How can I assist you further?"
+                asyncio.create_task(self._process_slack_message(response))
+            else:
+                logger.warning(f"Invalid data packet: {payload}")
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse data packet: {payload}")
+        except Exception as e:
+            logger.error(f"Error processing data packet: {e}")
+
+    async def _process_slack_message(self, response: str):
+        """Async helper to process Slack messages and generate replies."""
+        await log_transcript("assistant", response)
+        await session.generate_reply(instructions=response)
 
     @agents.function_tool(name="get_quote",
                           description="Retrieve shipment details based on shipment ID or origin/destination.")
@@ -108,15 +141,24 @@ class LogisticsAgent(Agent):
                 shipment = quote_info["shipment_data"]
                 response = (
                     f"The quote for shipment {shipment['shipment_id']} from {shipment['origin_city']}, {shipment['origin_state']} "
-                    f"to {shipment['destination_city']}, {shipment['destination_state']} is ${quote_info['quote_amount']}, "
-                    f"for a {shipment['weight_lbs']}-pound shipment over {shipment['distance_miles']} miles.",
-                    f"Status: {shipment['status']}.",
-                    f"Last updated: {shipment['last_updated_timestamp']}.",
-                    f"Truck type: {shipment['truck_type']}.",
+                    f"to {shipment['destination_city']}, {shipment['destination_state']} is ${quote_info['quote_amount']:.2f}, "
+                    f"for a {shipment['weight_lbs']}-pound shipment over {shipment['distance_miles']} miles. "
+                    f"Status: {shipment['status']}. "
+                    f"Last updated: {shipment['last_updated_timestamp']}. "
+                    f"Truck type: {shipment['truck_type']}. "
                     f"Vendor: {shipment['vendor_name']}, Contact: {shipment['vendor_contact_number']}."
                 )
+                slack_message = (
+                    f"Shipment query: ID {shipment['shipment_id']} from {shipment['origin_city']}, {shipment['origin_state']} "
+                    f"to {shipment['destination_city']}, {shipment['destination_state']}. "
+                    f"Quote: ${quote_info['quote_amount']:.2f}, Weight: {shipment['weight_lbs']} lbs, "
+                    f"Distance: {shipment['distance_miles']} miles. "
+                    f"Status: {shipment['status']}, Last updated: {shipment['last_updated_timestamp']}, "
+                    f"Truck: {shipment['truck_type']}, Vendor: {shipment['vendor_name']} ({shipment['vendor_contact_number']})."
+                )
+                await self.send_slack_message(ctx, message=slack_message)
             else:
-                response = "No quote found for the provided details."
+                response = "No quote found for the provided details. Could you verify the shipment ID or provide origin and destination details?"
 
             await log_transcript("assistant", response)
             return {"response": response}
@@ -126,6 +168,20 @@ class LogisticsAgent(Agent):
             response = f"I apologize, but I'm having trouble retrieving that quote right now. Please try again."
             await log_transcript("assistant", response)
             return {"response": response}
+
+    @agents.function_tool(name="send_slack_message", description="Send a message to a Slack channel via the room.")
+    async def send_slack_message(self, ctx: agents.RunContext, message: str) -> dict:
+        try:
+            data = {"message": message}
+            payload = json.dumps(data).encode('utf-8')
+            await self.room.local_participant.publish_data(
+                payload=payload
+            )
+            logger.info(f"Published Slack message to room message={message}")
+            return {"status": "success", "response": "Message sent to Slack agent."}
+        except Exception as e:
+            logger.error(f"Error publishing Slack message: {e}")
+            return {"status": "failed", "response": f"Failed to send message: {str(e)}"}
 
     @agents.function_tool(name="get_faq",
                           description="Retrieve answers to general FAQ questions about logistics services.")
@@ -149,6 +205,67 @@ class LogisticsAgent(Agent):
             await log_transcript("assistant", response)
             return {"response": response}
 
+    async def hangup(self):
+        """Helper function to hang up the call by deleting the room"""
+        job_ctx = get_job_context()
+        await job_ctx.api.room.delete_room(
+            api.DeleteRoomRequest(
+                room=job_ctx.room.name,
+            )
+        )
+
+    @agents.function_tool(name="transfer_call", description="Transfer the call to a human agent.")
+    async def transfer_call(self, ctx: agents.RunContext) -> dict:
+        """Transfer the call to a human agent after confirming with the user."""
+        transfer_to = os.getenv("TRANSFER_PHONE_NUMBER", "+16023016597")
+        if not transfer_to:
+            logger.error("No transfer phone number configured")
+            response = "I'm sorry, I cannot transfer the call at this time. Please try again later."
+            await log_transcript("assistant", response)
+            return {"response": response}
+
+        logger.info(f"Initiating call transfer to {transfer_to}")
+
+        try:
+            response = "Please hold while I transfer you to a human agent."
+            await log_transcript("assistant", response)
+            await session.generate_reply(instructions=response)
+
+            await asyncio.sleep(2)
+
+            participants = await ctx.room.list_participants()
+            if not participants:
+                logger.error("No participants found in the room")
+                response = "I'm sorry, I encountered an issue while trying to transfer the call."
+                await log_transcript("assistant", response)
+                return {"response": response}
+
+            participant = next((p for p in participants if p.identity != AGENT_NAME), None)
+            if not participant:
+                logger.error("No valid participant found for transfer")
+                response = "I'm sorry, I encountered an issue while trying to transfer the call."
+                await log_transcript("assistant", response)
+                return {"response": response}
+
+            await ctx.api.sip.transfer_sip_participant(
+                api.TransferSIPParticipantRequest(
+                    room_name=ctx.room.name,
+                    participant_identity=participant.identity,
+                    transfer_to=f"tel:{transfer_to}",
+                )
+            )
+
+            logger.info(f"Successfully transferred call to {transfer_to}")
+            response = "Transfer successful. You are now being connected to a human agent."
+            await log_transcript("assistant", response)
+            return {"response": response}
+
+        except Exception as e:
+            logger.error(f"Error transferring call: {e}")
+            response = "I'm sorry, there was an issue transferring your call. How else can I assist you?"
+            await log_transcript("assistant", response)
+            return {"response": response}
+
     @agents.function_tool(name="end_call", description="End the conversation and disconnect the call.")
     async def end_call(self, ctx: agents.RunContext) -> dict:
         try:
@@ -157,8 +274,10 @@ class LogisticsAgent(Agent):
             logger.info("Call ended by tool")
             response = "Thank you for calling Qbotica logistics. Have a great day! Goodbye!"
             await log_transcript("assistant", response)
+            await session.generate_reply(instructions=response)
 
             await asyncio.sleep(2)
+            await self.hangup()
             return {"response": response}
 
         except Exception as e:
@@ -218,6 +337,7 @@ def get_faq_answer(question: str) -> Optional[str]:
 
 async def entrypoint(ctx: JobContext):
     health_check_task = None
+    global session
     session = None
     connection_active = True
     inactivity_timeout = 300
@@ -241,7 +361,7 @@ async def entrypoint(ctx: JobContext):
             logger.error(f"Error waiting for participant: {e}")
             return
 
-        agent = LogisticsAgent()
+        agent = LogisticsAgent(room=ctx.room)
         session = AgentSession(
             stt=deepgram.STT(
                 api_key=DEEPGRAM_API_KEY,
@@ -280,6 +400,14 @@ async def entrypoint(ctx: JobContext):
         last_activity_time = asyncio.get_event_loop().time()
 
         logger.info("Inbound call initiated successfully")
+
+        # background_audio = BackgroundAudioPlayer(
+        #     thinking_sound=[
+        #         AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.8),
+        #         AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING2, volume=0.7),
+        #     ],
+        # )
+        # await background_audio.start(room=ctx.room, agent_session=session)
 
         while connection_active:
             if session.turn_detection:
