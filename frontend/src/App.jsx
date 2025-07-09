@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import './App.css'
-import LiveKitModal from './components/LikeKitModal'
+import LiveKitModal from './components/LiveKitModal'
 
 function App() {
   return (
