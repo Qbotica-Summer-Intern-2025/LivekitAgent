@@ -7,6 +7,9 @@ from livekit.api import LiveKitAPI, ListRoomsRequest
 import redis.asyncio as redis
 
 load_dotenv()
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -19,7 +22,7 @@ async def get_rooms():
 
 async def get_dynamic_room_name(phone_number=None):
     try:
-        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, db=0, decode_responses=True)
         if phone_number:
             room = await redis_client.get(f"room:{phone_number}")
         else:
