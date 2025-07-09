@@ -42,6 +42,9 @@ SMTP_PORT = os.getenv("SMTP_PORT", 587)
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 RATES_TEAM_EMAIL = os.getenv("RATES_TEAM_EMAIL", "rates@polarislogistics.com")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
 FREIGHT_CLASS_MULTIPLIERS = {
     (0, 50): 0.80,
@@ -949,7 +952,7 @@ async def entrypoint(ctx: JobContext):
 
         try:
             phone_number = ctx.room.name.split('_')[1]
-            redis_client = redis.Redis(host='localhost', port=6379, db=0)
+            redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, db=0, decode_responses=True)
             await redis_client.set(f"room:{phone_number}", ctx.room.name)
             logger.info(f"Added room {ctx.room.name} to Redis for phone: {phone_number}")
         except Exception as e:
