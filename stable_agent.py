@@ -17,9 +17,14 @@ import random
 import requests
 import smtplib
 from email.mime.text import MIMEText
+from fpdf import FPDF
+from datetime import datetime
+from email.message import EmailMessage
 import re
 import math
 import time
+from typing import Dict
+
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("LogisticsAgent")
@@ -42,7 +47,7 @@ SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = os.getenv("SMTP_PORT", 587)
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-RATES_TEAM_EMAIL = os.getenv("RATES_TEAM_EMAIL", "rates@polarislogistics.com")
+RATES_TEAM_EMAIL = os.getenv("RATES_TEAM_EMAIL", "mahesh.v@qbotica.com")
 
 FREIGHT_CLASS_MULTIPLIERS = {
     (0, 50): 0.80,
@@ -80,15 +85,28 @@ except Exception as e:
     logger.error(f"Failed to load dataset: {e}")
     raise
 
+
+
+# def requires_verification(func):
+#     async def wrapper(ctx: JobContext, *args, **kwargs):
+#         cust_status = await cust_val(ctx)
+#         if cust_status["status"] != "matched":
+#             await session.generate_reply(instructions="Please verify your identity before proceeding.")
+#             return {"error": "unauthorized"}
+#         return await func(ctx, *args, **kwargs)
+#     return wrapper
+
 async def log_transcript(role: str, content: str):
     logger.info(f"[{role.upper()}]: {content}")
+
+
+
 
 def calculate_backoff_with_jitter(attempt: int, base_delay: float = 1.0, max_delay: float = 32.0) -> float:
     """Calculate exponential backoff with jitter"""
     jitter = random.random() * base_delay
     backoff = min((2 ** attempt) * base_delay + jitter, max_delay)
     return backoff
-
 
 async def tts_with_retry(session: AgentSession, text: str) -> bool:
     if not session or not session.tts or not session.vad:
@@ -97,7 +115,6 @@ async def tts_with_retry(session: AgentSession, text: str) -> bool:
 
     for attempt in range(3):
         try:
-
             vad_stream = session.vad.stream()
             tts_stream = await session.tts.synthesize(text)
 
@@ -120,13 +137,11 @@ async def tts_with_retry(session: AgentSession, text: str) -> bool:
     logger.error("TTS failed after 3 attempts")
     return False
 
-
 async def process_and_respond(session: AgentSession, text: str):
     await log_transcript("assistant", text)
 
     if not await tts_with_retry(session, text):
         logger.error("All TTS attempts failed - falling back to silent mode")
-
 
 def validate_postal_code(postal_code: str, country: str = "") -> bool:
     postal_code = postal_code.strip().upper()
@@ -147,7 +162,6 @@ def validate_postal_code(postal_code: str, country: str = "") -> bool:
     elif country == "CA":
         return bool(re.match(r"^[A-Z]\d[A-Z][ ]?\d[A-Z]\d$", postal_code))
     return False
-
 
 def get_distance_miles(origin_zip: str, dest_zip: str, origin_country: str = "", dest_country: str = "") -> float:
     def format_postal(zip_code: str, country: str) -> str:
@@ -187,7 +201,6 @@ def get_distance_miles(origin_zip: str, dest_zip: str, origin_country: str = "",
             delay = calculate_backoff_with_jitter(attempt)
             logger.warning(f"Distance API failed (attempt {attempt + 1}), retrying in {delay:.2f}s...")
             time.sleep(delay)
-
 
 def get_class_multiplier(freight_class: int) -> float:
     for (low, high), multiplier in FREIGHT_CLASS_MULTIPLIERS.items():
@@ -245,12 +258,17 @@ class LogisticsAgent(Agent):
         super().__init__(
             instructions=(
                 f"You are calling from Polaris, start the convo with 'Thank you for calling Polaris. How may I assist you?' and don't let them know you are an AI agent. "
+                "Always verify them before talking any business using 'cust_val' tool. and also tell their company name with the name "
+                "if they want to create,track,update  a shipment always verify them first using 'cust_val' tool and then ask for the shipment ID."
+                "if they are not verified end the call politely with 'hangup' tool."
                 "Use more pausewords like 'uhmm.' and 'Hmm...' to sound more human."
                 "Be precise and act and talk like karen, confirming details like company name and shipment specifics."
                 "Only use 'transfer_call' when explicitly requested by the user or after 3 failed attempts to resolve their issue."
                 "Ask the details of the shipment one by one when an user is creating an order"
                 "And after creating the order tell them the price of the shipment first and then ask them to note the shipment ID. And be ready for the followup questions instead of ending the call."
                 "After calculating the rate just tell them and confirm it before creating the order"
+                "if the shipment is InTransit reply it cleared the customs and will receive soon"
+                "If they wanna ship hazardous goods tell them you cant ship and ask them to reach out to Shipping department."
                 "There ight be a mix up in the words sometime so you need to ask them for clarification politely and do not cut the call prematurely. "
                 "Try to end the call for only persons who is legitly wsting your time. Dont try to end the call for persons who is creating a valid order or asking a valid question."
                 "Do not repeat the shipment ID in follow-up questions. Say 'Uhh... let me quickly check that shipment ID number for you, okay? Just a sec...' when checking details of."
@@ -261,7 +279,7 @@ class LogisticsAgent(Agent):
                 "Use the 'calculate_ltl_quote' tool for precise shipping LTL rates when the user provides ZIP code , weight rate, freight class rate, and skid details about."
                 "If the order has more than 7 items skids, escalate to rates team by collecting email from customer email and using a 'send email' tool to notify rates team."
                 "Ask for skid dimensions (length,width and height in inches), stackability (stackable or non-stackable), delivery appointment requirements, and urgency (e.g., same-day pickup)."
-                "Use the 'create_new_order' tool to create a new shipping order when the user wants to send a load. Ask for origin country and state and zip code and destination country and state and zip code , weight (in pounds), freight class, skid details, stackability, and delivery requirements."
+                "Use the 'create_new_order' tool to create a new shipping order when the user wants to send a load. Ask for origin country and state and city and zip code and destination country and state and city and zip code , weight (in pounds), freight class, skid details, stackability, and delivery requirements."
                 "Assign a unique shipment ID starting with 'SHP' followed by random numbers (e.g., SHP12345)."
                 "You wanna tell the price and confirm them to create a shipent"
                 "Use the 'update_order' tool to update an existing order when the user provides a shipment ID and at least one field to update. Retain existing details for unchanged fields."
@@ -269,11 +287,13 @@ class LogisticsAgent(Agent):
                 "Use the 'get_faq' tool for general questions about logistics services, including driver jobs, complaints, or how to ship."
                 "If the user asks for a joke, tell one."
                 "The 'get_quote', 'create_new_order', and 'update_order' tools automatically send shipment details to a Slack channel. Do not call 'send_slack_message' directly."
-                "If the user asks for a human agent, use 'transfer_call' to connect them to +14807172012."
+                "If the user asks for a human agent, use 'transfer_call' to connect them"
                 "If a message is received from Slack, incorporate it appropriately."
                 "After an order is created, if asked about status, say it will be processed soon."
-                "For urgent orders (e.g., same-day pickup), mark as 'hot' and escalate via email or transfer."
+                "For urgent orders (e.g., same-day pickup), mark as 'hot' and escalate via email or transfer. to '+16235009891'"
                 "Confirm details with phrases like 'Let me make sure I have that right' "
+                "Shipment Id always starts with SHP followed by 5 digits."
+
             )
         )
         self.call_context = {
@@ -283,10 +303,43 @@ class LogisticsAgent(Agent):
             'latest_quote': None,
             'call_active': False,
             'latest_query': None
+
         }
         self.room = room
         self.api = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         self.room.on("data_received", lambda packet: self.on_data_received(packet))
+
+    @agents.function_tool(name='cust_val', description="Validate the caller from HubSpot CRM using their phone number.")
+    async def cust_val(ctx: JobContext) -> Dict:
+        try:
+            phone_number = ctx.room.name.split('_')[1]
+            logger.info(f"Verifying phone number: {phone_number}")
+
+            from hubby import search_contact_by_phone
+            result = search_contact_by_phone(phone_number)
+
+            redis_client = redis.Redis(host='localhost', port=6379, db=0)
+            await redis_client.set(f"verified:{phone_number}", "true" if result["status"] == "success" else "false")
+            await log_transcript("assistant", result["message"])
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error verifying customer: {e}")
+            response = "Sorry, I couldn't verify your identity. Please try again."
+            redis_client = redis.Redis(host='localhost', port=6379, db=0)
+            await redis_client.set(f"verified:{phone_number}", "false")
+            await log_transcript("assistant", response)
+            return {
+                "status": "error",
+                "contact": None,
+                "message": response
+            }
+
+
+    def requires_verification(self):
+        """Check if customer is verified before proceeding with sensitive operations"""
+        return self.call_context.get('customer_verified', False)
 
     async def cleanup(self):
         try:
@@ -304,7 +357,7 @@ class LogisticsAgent(Agent):
             if slack_message:
                 logger.info(f"Received Slack message: {slack_message}")
                 response = f"I received a message from our team via Slack: {slack_message}. How can I assist you further?"
-                asyncio.create_task(process_and_respond(session, response, get_job_context(), self))
+                asyncio.create_task(process_and_respond(session, response))
             else:
                 logger.warning(f"Invalid data packet: {payload}")
         except json.JSONDecodeError:
@@ -332,6 +385,90 @@ class LogisticsAgent(Agent):
         except Exception as e:
             logger.error(f"Error sending email: {e}")
             return {"status": "failed", "response": f"Failed to send email: {str(e)}"}
+
+    @agents.function_tool(
+        name='send_pod',
+        description="Send a proof of delivery after a user created an order and also if they update any order"
+    )
+    async def send_pod_mail(self, ctx: agents.RunContext, to_email: str, subject: str, body: str) -> dict:
+        try:
+            match = re.search(r"SHP\d{5}", body)
+            if not match:
+                return {"status": "failed", "response": "Shipment ID not found in email body."}
+
+            shipment_id = match.group(0)
+            csv_file = "orders.csv"
+            logo_file = "test.png"
+            output_pdf = f"order_summary_{shipment_id}.pdf"
+            selected_columns = ["shipment_id", "origin_zip", "dest_zip", "Quote"]
+
+            df = pd.read_csv(csv_file)
+            df = df[df["shipment_id"] == shipment_id]
+
+            if df.empty:
+                return {"status": "failed", "response": f"Shipment ID {shipment_id} not found in CSV."}
+
+            df = df[selected_columns]
+            today = datetime.today().strftime('%Y-%m-%d')
+
+            pdf = FPDF()
+            pdf.add_page()
+
+            if os.path.exists(logo_file):
+                pdf.image(logo_file, x=10, y=10, w=40)
+                pdf.set_xy(10, 40)
+            else:
+                pdf.set_y(10)
+
+            pdf.set_font("Arial", "B", 16)
+            pdf.cell(0, 10, "Your Order Summary", ln=True, align="C")
+            pdf.set_font("Arial", "", 12)
+            pdf.cell(0, 10, f"Date: {today}", ln=True, align="C")
+            pdf.ln(10)
+
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, f"Shipment Details for ID: {shipment_id}", ln=True)
+
+            pdf.set_font("Arial", "B", 11)
+            col_width = 45
+            for col in selected_columns:
+                pdf.cell(col_width, 10, col, border=1)
+            pdf.ln()
+
+            pdf.set_font("Arial", "", 11)
+            for _, row in df.iterrows():
+                for col in selected_columns:
+                    pdf.cell(col_width, 10, str(row[col]), border=1)
+                pdf.ln()
+
+            pdf.ln(10)
+            pdf.set_font("Arial", "I", 10)
+            pdf.multi_cell(0, 8,
+                           "Your Shipment has been successfully booked.\nFor any queries regarding this shipment, contact: support@qbotica.com")
+
+            pdf.output(output_pdf)
+
+            msg = EmailMessage()
+            msg['Subject'] = subject
+            msg['From'] = SMTP_USERNAME
+            msg['To'] = to_email
+            msg['Cc'] = RATES_TEAM_EMAIL
+            msg.set_content(body)
+
+            with open(output_pdf, 'rb') as f:
+                msg.add_attachment(f.read(), maintype='application', subtype='pdf', filename=output_pdf)
+
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+
+            logger.info(f"POD email sent to {to_email} with PDF for {shipment_id}.")
+            return {"status": "success", "response": f"POD email sent for {shipment_id}."}
+
+        except Exception as e:
+            logger.error(f"Error sending POD email: {e}")
+            return {"status": "failed", "response": f"Failed to send POD email: {str(e)}"}
 
     @agents.function_tool(name="calculate_ltl_quote",
                           description="Calculate LTL shipping rate using origin/destination ZIP codes, weight, freight class, and skid details.")
@@ -363,7 +500,6 @@ class LogisticsAgent(Agent):
             if skid_count > 7:
                 if not customer_email:
                     response = "For orders with more than 7 skids, I need your email address to escalate to our rates team."
-                    await log_transcript("assistant", response)
                     return {"response": response, "rate": None, "distance": None}
 
                 skid_summary = "\n".join(
@@ -392,7 +528,6 @@ class LogisticsAgent(Agent):
                     f"They'll get back to you soon with a quote{' marked as urgent' if is_urgent else ''}. "
                     "Anything else I can help with?"
                 )
-                await log_transcript("assistant", response)
                 return {"response": response, "rate": None, "distance": None}
 
             rate = calculate_ltl_rate(
@@ -409,7 +544,7 @@ class LogisticsAgent(Agent):
             distance = get_distance_miles(origin_zip, dest_zip, origin_country, dest_country)
             skid_summary = f", {skid_count} skids" if skid_count > 1 else ""
             response = (
-                f"LTL shipping quote from {origin_zip} ({origin_country}) to {dest_zip} ({dest_country}): "
+                f"Dont use Asterisk LTL shipping quote from {origin_zip} ({origin_country}) to {dest_zip} ({dest_country}): "
                 f"${rate:.2f} for {weight_lbs} lbs (freight class {freight_class}{skid_summary}). "
                 f"Distance: {distance:.1f} miles. "
                 f"Stackable: {'Yes' if is_stackable else 'No'}. "
@@ -423,13 +558,11 @@ class LogisticsAgent(Agent):
                 f"Stackable: {'Yes' if is_stackable else 'No'}, Urgent: {'Yes' if is_urgent else 'No'}"
             )
             await self.send_slack_message(ctx, message=slack_message)
-            await log_transcript("assistant", response)
             return {"response": response, "rate": rate, "distance": distance}
 
         except Exception as e:
             logger.error(f"Error calculating LTL rate: {e}")
             response = "I apologize, but I'm having trouble calculating that LTL rate right now. Please verify the postal codes and try again."
-            await log_transcript("assistant", response)
             return {"response": response, "rate": None, "distance": None}
 
     @agents.function_tool(name="get_quote",
@@ -520,14 +653,12 @@ class LogisticsAgent(Agent):
                         else:
                             response_parts.append(f"{field.replace('_', ' ').title()}: {shipment[field]}.")
                 response = " ".join(response_parts)
-
                 slack_message = (
                     f"Shipment query: ID {shipment['shipment_id']} from {shipment['origin_zip']} "
                     f"to {shipment['dest_zip']}. Quote: ${quote_info['quote_amount']:.2f}, "
                     f"Weight: {shipment['weight_lbs']} lbs, Freight Class: {shipment['freight_class']}."
                 )
                 await self.send_slack_message(ctx, message=slack_message)
-                await log_transcript("assistant", response)
                 self.call_context['conversation_history'].append(
                     {"query": user_query or "get_quote", "response": response})
                 return {"response": response}
@@ -541,15 +672,13 @@ class LogisticsAgent(Agent):
                     )
                 else:
                     response = "No quote found for the provided details. Could you verify the shipment ID or provide origin and destination postal codes?"
-
-                await log_transcript("assistant", response)
                 self.call_context['conversation_history'].append(
+                    {"query": user_query or "get_quote", "response": response})
                 return {"response": response}
 
         except Exception as e:
             logger.error(f"Error getting quote: {e}")
             response = "I apologize, but I'm having trouble retrieving that quote right now. Please try again."
-            await log_transcript("assistant", response)
             self.call_context['conversation_history'].append({"query": user_query or "get_quote", "response": response})
             return {"response": response}
 
@@ -585,7 +714,6 @@ class LogisticsAgent(Agent):
         except Exception as e:
             logger.error(f"Error getting FAQ answer: {e}")
             response = "I apologize, but I'm having trouble answering that question right now. Please try again."
-            await log_transcript("assistant", response)
             return {"response": response}
 
     @agents.function_tool(name="create_new_order", description="Create a new shipping order with provided details.")
@@ -607,8 +735,11 @@ class LogisticsAgent(Agent):
             delivery_appointment: bool = False,
             customer_email: Optional[str] = None,
             origin_country: str = "US",
-            dest_country: str = "US"
+            dest_country: str = "US",
+            Quote: float = None
     ) -> dict:
+
+
         try:
             if not validate_postal_code(origin_zip, origin_country):
                 raise ValueError(f"Invalid origin postal code: {origin_zip}")
@@ -666,9 +797,11 @@ class LogisticsAgent(Agent):
                 is_urgent=is_urgent,
                 delivery_appointment=delivery_appointment,
                 origin_country=origin_country,
-                dest_country=dest_country
+                dest_country=dest_country,
+                Quote=Quote
             )
             response = result["response"]
+            response = session.generate_reply(instructions=f"Return coherent response for {response}")
             if result["status"] == "success":
                 skid_count = len(skid_details) if skid_details else 1
                 slack_message = (
@@ -678,7 +811,6 @@ class LogisticsAgent(Agent):
                     f"Stackable: {'Yes' if is_stackable else 'No'}, Urgent: {'Yes' if is_urgent else 'No'}"
                 )
                 await self.send_slack_message(ctx, message=slack_message)
-            await log_transcript("assistant", response)
             return result
         except Exception as e:
             logger.error(f"Error creating new order: {e}")
@@ -707,6 +839,7 @@ class LogisticsAgent(Agent):
             origin_country: Optional[str] = None,
             dest_country: Optional[str] = None
     ) -> dict:
+
         try:
             kwargs = {
                 k: v for k, v in {
@@ -729,7 +862,7 @@ class LogisticsAgent(Agent):
             }
             result = update_order(shipment_id=shipment_id, **kwargs)
             response = result["response"]
-
+            response = session.generate_reply(instructions=f"Return coherent response for {response}")
             if result["status"] == "success":
                 updated_fields = {k: v for k, v in kwargs.items()}
                 slack_message = (
@@ -737,8 +870,6 @@ class LogisticsAgent(Agent):
                     f"Shipment ID: {shipment_id}, Updated fields: {', '.join(f'{k}: {v}' for k, v in updated_fields.items())}"
                 )
                 await self.send_slack_message(ctx, message=slack_message)
-
-            await log_transcript("assistant", response)
             return result
         except Exception as e:
             logger.error(f"Error updating order: {e}")
@@ -748,7 +879,7 @@ class LogisticsAgent(Agent):
 
     @agents.function_tool(name="transfer_call", description="Transfer the call to a human agent.")
     async def transfer_call(self, ctx: agents.RunContext, transfer_to: Optional[str] = None) -> dict:
-        transfer_to = transfer_to or os.getenv("TRANSFER_PHONE_NUMBER", "")
+        transfer_to = transfer_to or os.getenv("TRANSFER_PHONE_NUMBER", "+16235009891")
         if not transfer_to:
             logger.error("No transfer phone number configured")
             response = "I'm sorry, I cannot transfer the call at this time. Please try again later."
@@ -759,7 +890,7 @@ class LogisticsAgent(Agent):
 
         try:
             response = "Please hold while I transfer you to a human agent."
-            await log_transcript("assistant", response)
+            await session.generate_reply(instructions=response)
 
             await asyncio.sleep(2)
 
@@ -813,6 +944,8 @@ class LogisticsAgent(Agent):
             response = "I'm sorry, there was an issue transferring your call. How else can I assist you?"
             await log_transcript("assistant", response)
             return {"response": response}
+
+
 
     @agents.function_tool(name="end_call", description="End the conversation and disconnect the call.")
     async def end_call(self, ctx: agents.RunContext) -> dict:
@@ -980,6 +1113,7 @@ def get_quote_from_dataset(parsed_entities: dict) -> dict:
         "response": f"Shipment ID {shipment_id} not found in orders or dataset, and insufficient details provided."
     }
 
+
 def get_faq_answer(question: str) -> Optional[str]:
     question = question.lower().strip()
     faq_data = get_faq_data()
@@ -988,7 +1122,6 @@ def get_faq_answer(question: str) -> Optional[str]:
     if matches:
         return faq_data[matches[0]]
     return None
-
 
 async def health_check():
     """Silent health monitor with failure alerts"""
@@ -1011,6 +1144,8 @@ async def entrypoint(ctx: JobContext):
     inactivity_timeout = 300
     last_activity_time = asyncio.get_event_loop().time()
 
+
+
     try:
         logger.info(f"Starting {AGENT_NAME} entrypoint for room: {ctx.room.name}")
 
@@ -1024,6 +1159,7 @@ async def entrypoint(ctx: JobContext):
 
         await ctx.connect(auto_subscribe=agents.AutoSubscribe.SUBSCRIBE_ALL)
         logger.info(f"Agent connected to {LIVEKIT_URL}, waiting for participant...")
+
 
         try:
             participant = await asyncio.wait_for(
@@ -1041,7 +1177,7 @@ async def entrypoint(ctx: JobContext):
 
         agent = LogisticsAgent(ctx.room)
         session = AgentSession(
-            stt=cartesia.STT(),
+            stt=deepgram.STT(),
             llm=openai.LLM(model="gpt-4o", temperature=0.7),
             tts=cartesia.TTS(voice="2e926772-e6a4-4cdf-85bf-368105e8e424"),
             vad=silero.VAD.load()
@@ -1064,9 +1200,8 @@ async def entrypoint(ctx: JobContext):
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC())
         )
 
-        welcome_message = "Thank you for calling Polaris. How may I assist you?"
+        welcome_message = "Thank you for calling Logistics agent. How may I assist you?"
         await session.generate_reply(instructions=welcome_message)
-
 
         logger.info("Inbound call initiated successfully")
 
@@ -1080,7 +1215,6 @@ async def entrypoint(ctx: JobContext):
                 pass
 
             await asyncio.sleep(0.1)
-
 
     except Exception as e:
         logger.error(f"Error in entrypoint: {e}", exc_info=True)
@@ -1102,6 +1236,9 @@ async def entrypoint(ctx: JobContext):
         except Exception as cleanup_e:
             logger.error(f"Error during cleanup: {cleanup_e}")
 
+
+
+
 if __name__ == "__main__":
     logger.info(f"Starting {AGENT_NAME} for SIP trunk {SIP_INBOUND_TRUNK_ID}")
     cli.run_app(
@@ -1110,3 +1247,4 @@ if __name__ == "__main__":
             agent_name=AGENT_NAME
         )
     )
+

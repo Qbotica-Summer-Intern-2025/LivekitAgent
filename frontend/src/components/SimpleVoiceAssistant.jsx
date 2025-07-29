@@ -7,14 +7,14 @@ import {
   useParticipants,
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import "./SimpleVoiceAssistant.css";
 
-const Message = ({ type, text }) => {
+const Message = ({ type, text, name }) => {
   return (
     <div className="message">
       <strong className={`message-${type}`}>
-        {type === "agent" ? "Qubi: " : "You: "}
+        {type === "agent" ? "Qubi: " : `${name || "You"}: `}
       </strong>
       <span className="message-text">{text}</span>
     </div>
@@ -53,43 +53,86 @@ const ParticipantCircle = ({ name, isActive, isLocal = false }) => {
   );
 };
 
-const SimpleVoiceAssistant = () => {
-  const { state, audioTrack, agentTranscriptions } = useVoiceAssistant();
-  const localParticipant = useLocalParticipant();
-  const participants = useParticipants();
+// Separate component for handling SIP transcription
+const SipTranscriptionHandler = ({ sipParticipant, onTranscriptions }) => {
+  const sipAudioTrack = sipParticipant?.audioTrackPublications?.values().next().value;
+
   const { segments: userTranscriptions } = useTrackTranscription({
-    publication: localParticipant.microphoneTrack,
+    publication: sipAudioTrack || null,
     source: Track.Source.Microphone,
-    participant: localParticipant.localParticipant,
+    participant: sipParticipant || null, // Fixed syntax
   });
 
+  useEffect(() => {
+    if (onTranscriptions) {
+      onTranscriptions(userTranscriptions || []);
+    }
+  }, [userTranscriptions, onTranscriptions]);
+
+  return null; // This component doesn't render anything
+};
+
+const SimpleVoiceAssistant = ({ name }) => {
+  const { state, audioTrack, agentTranscriptions } = useVoiceAssistant();
+  const { localParticipant } = useLocalParticipant();
+  const participants = useParticipants();
+
+  // Find the SIP participant (Twilio phone caller)
+  const sipParticipant = participants.find(p => p?.identity?.startsWith('sip_'));
+
+  const [userTranscriptions, setUserTranscriptions] = useState([]);
   const [messages, setMessages] = useState([]);
 
+  // Create a ref for the conversation container
+  const conversationRef = useRef(null);
+
+  // Auto-scroll function
+  const scrollToBottom = () => {
+    if (conversationRef.current) {
+      conversationRef.current.scrollTop = conversationRef.current.scrollHeight;
+    }
+  };
+
   useEffect(() => {
+    console.log('=== DEBUG INFO ===');
+    console.log('SIP participant:', sipParticipant);
+    console.log('Agent transcriptions:', agentTranscriptions);
+    console.log('User transcriptions:', userTranscriptions);
+    console.log('=== END DEBUG ===');
+
     const allMessages = [
       ...(agentTranscriptions?.map((t) => ({ ...t, type: "agent" })) ?? []),
       ...(userTranscriptions?.map((t) => ({ ...t, type: "user" })) ?? []),
     ].sort((a, b) => a.firstReceivedTime - b.firstReceivedTime);
     setMessages(allMessages);
-  }, [agentTranscriptions, userTranscriptions]);
+  }, [agentTranscriptions, userTranscriptions, sipParticipant]);
+
+  // Auto-scroll whenever messages change
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   const isLocalActive = state === "listening" || state === "thinking";
   const isAiActive = state === "speaking";
 
   return (
     <div className="voice-assistant-container">
-      <div className="main-content">
-        <div className="title-section">
-          <h2 className="main-title">Live Polaris Logistics </h2>
-        </div>
+      {/* Only render the SIP transcription handler if we have a SIP participant */}
+      {sipParticipant && (
+        <SipTranscriptionHandler
+          sipParticipant={sipParticipant}
+          onTranscriptions={setUserTranscriptions}
+        />
+      )}
 
+      <div className="main-content">
         <div className="participants-section">
           <ParticipantCircle
             name="Qubi"
             isActive={isAiActive}
           />
           <ParticipantCircle
-            name="You"
+            name={name || "You"}
             isActive={isLocalActive}
             isLocal={true}
           />
@@ -98,21 +141,22 @@ const SimpleVoiceAssistant = () => {
         <div className="visualizer-container">
           <BarVisualizer state={state} barCount={7} trackRef={audioTrack} />
         </div>
-
-        <div className="control-section">
-          <VoiceAssistantControlBar />
-        </div>
       </div>
 
       <div className="conversation-panel">
-        <div className="conversation">
+        <div className="conversation" ref={conversationRef}>
           {messages.length === 0 ? (
             <div className="no-messages">
               Start speaking to begin the conversation...
             </div>
           ) : (
             messages.map((msg, index) => (
-              <Message key={msg.id || index} type={msg.type} text={msg.text} />
+              <Message
+                key={msg.id || index}
+                type={msg.type}
+                text={msg.text}
+                name={name}
+              />
             ))
           )}
         </div>

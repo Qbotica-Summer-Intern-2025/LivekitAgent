@@ -23,7 +23,10 @@ def create_new_order(
         is_urgent: bool = False,
         delivery_appointment: bool = False,
         origin_country: str = "US",
-        dest_country: str = "US"
+        dest_country: str = "US",
+        Quote: str =None,
+        skid_dims: str =None,
+
 ) -> dict:
     try:
         shipment_id = f"SHP{random.randint(10000, 99999)}"
@@ -47,7 +50,10 @@ def create_new_order(
             "dest_country": dest_country,
             "status": "pending",
             "created_at": created_at,
-            "last_updated_timestamp": created_at
+            "last_updated_timestamp": created_at,
+            "Quote": Quote,
+            "skid_dims": skid_dims if skid_dims else "unknown",
+
         }
 
         orders_df = pd.DataFrame([order_data])

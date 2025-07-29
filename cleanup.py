@@ -24,7 +24,9 @@ required_dtypes = {
     "dest_country": str,
     "status": str,
     "created_at": str,
-    "last_updated_timestamp": str
+    "last_updated_timestamp": str,
+    "skid_dims":str,
+    "Quote":str
 }
 
 try:

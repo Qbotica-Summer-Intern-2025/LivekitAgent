@@ -132,9 +132,9 @@
 
 .conversation-panel {
   position: fixed;
-  top: 0;
+  top: 60px;
   right: 0;
-  height: 100vh;
+  height: calc(100vh - 60px);
   width: 350px;
   background-color: #F9780C;
   border-left: 1px solid #374151;
