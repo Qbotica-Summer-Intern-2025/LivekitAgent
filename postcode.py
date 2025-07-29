@@ -1,7 +1,7 @@
 import re
 import requests
 
-GOOGLE_MAPS_API_KEY = 'AIzaSyCxlqefRqN1dwOULhHwSECrqxbr1PkvIJo'  # Replace with your real API key
+GOOGLE_MAPS_API_KEY = ''  # Replace with your real API key
 
 
 def detect_country(postal_code: str) -> str:
