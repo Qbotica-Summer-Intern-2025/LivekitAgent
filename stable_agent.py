@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from livekit import agents, rtc, api
 from livekit.agents import JobContext, WorkerOptions, cli, Agent, AgentSession, RoomInputOptions, get_job_context
 from livekit.plugins import deepgram, openai, silero, noise_cancellation, cartesia
-from typing import Optional, List, Dict
+from typing import Optional, List
 import aiohttp
 import redis.asyncio as redis
 from faq_dataset import get_faq_data
@@ -103,7 +103,6 @@ async def log_transcript(role: str, content: str):
 
 
 def calculate_backoff_with_jitter(attempt: int, base_delay: float = 1.0, max_delay: float = 32.0) -> float:
-    """Calculate exponential backoff with jitter"""
     jitter = random.random() * base_delay
     backoff = min((2 ** attempt) * base_delay + jitter, max_delay)
     return backoff
@@ -120,9 +119,8 @@ async def tts_with_retry(session: AgentSession, text: str) -> bool:
 
             if hasattr(tts_stream, "__aiter__"):
                 async for chunk in tts_stream:
-                    # Check VAD for speech detection
                     vad_packet = await vad_stream.__anext__()
-                    if vad_packet.is_speech:  # Correct VAD detection check
+                    if vad_packet.is_speech:
                         logger.info("User speech detected - stopping TTS")
                         if hasattr(tts_stream, "aclose"):
                             await tts_stream.aclose()
